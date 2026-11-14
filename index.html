@@ -301,7 +301,7 @@ function saveLocal() {
 }
 
 function loadLocal() {
-  const s = localStorage.getItem('patrimonio_state');
+   s = localStorage.getItem('patrimonio_state');
   if (s) {
     try { state = { ...state, ...JSON.parse(s) }; } catch(e) {}
   }
@@ -2059,7 +2059,7 @@ function closeModal() { document.getElementById('modal-overlay').classList.add('
 function closeModalOnOverlay(e) { if (e.target === document.getElementById('modal-overlay')) closeModal(); }
 
 // ─── AUTENTICAÇÃO POR SENHA ────────────────────────────────────────────────
-const ENCRYPTED_TOKEN = 'cfd85e9461d514f2c2b3a9c08a803d4b:0217dfc768692afc263546ee57aafd3e135a6c2b00921bec2055b7e821926c263eb964565db5c0a83e13e8a3662ab120';
+const ENCRYPTED_TOKEN = 'd64bf213fd08f05f97b10821f43771aa:d6624285004a1e0eb57bbbe02a43a74d1b08bc2185bae72bd9886232b8c4f39726ddb083beb93afa8c63e33cfdff8208';
 const SALT = 'patrimonio_imoveis_salt_2024';
 const GIST_ID = '408a0e3337b641c84fcaa85aa148c00e';
 
