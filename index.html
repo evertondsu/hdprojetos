@@ -45,6 +45,12 @@
   .gist-status { font-size: 11px; color: rgba(255,255,255,0.5); display: flex; align-items: center; gap: 6px; }
   .gist-dot { width: 6px; height: 6px; border-radius: 50%; background: #6ee7b7; }
   .gist-dot.off { background: rgba(255,255,255,0.3); }
+  .gist-dot.pendente { background: #fbbf24; }
+  .gist-dot.erro { background: #f87171; }
+  .aviso-nuvem { display: flex; align-items: flex-start; gap: 12px; background: #FDECEA; color: var(--danger); border-bottom: 1px solid #f3c2bc; padding: 10px 28px; font-size: 13px; flex-shrink: 0; }
+  .aviso-nuvem.hidden { display: none; }
+  .aviso-nuvem span { flex: 1; }
+  .aviso-nuvem button { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 14px; padding: 0 4px; }
 
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 28px; height: 56px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
@@ -269,6 +275,10 @@
       <span class="topbar-title" id="page-title">Painel consolidado</span>
       <div class="topbar-actions" id="topbar-actions"></div>
     </div>
+    <div class="aviso-nuvem hidden" id="aviso-nuvem" role="alert">
+      <span id="aviso-nuvem-texto"></span>
+      <button type="button" onclick="fecharAvisoNuvem()" aria-label="Fechar aviso">✕</button>
+    </div>
     <div class="content" id="content"></div>
   </div>
 </div>
@@ -296,19 +306,45 @@ let state = {
 };
 
 // ─── PERSISTENCE ─────────────────────────────────────────────────────────────
-function saveLocal() {
-  localStorage.setItem('patrimonio_state', JSON.stringify(state));
+// Fonte única dos dados: o Gist (patrimonio.json). Nada é lido ou gravado no
+// navegador. O token fica só em memória, durante a sessão.
+// gistCarregado: só fica true depois de um loadGist bem-sucedido. Enquanto for
+// false, o saveGist não grava (evita sobrescrever o Gist com estado vazio).
+let gistCarregado = false;
+let gistSituacao = 'off'; // off | ok | salvando | erro-load | erro-save
+let _filaSave = Promise.resolve();
+
+// Remove dados antigos que versões anteriores gravavam no navegador (incluía o token).
+function limparArmazenamentoLocal() {
+  try { localStorage.removeItem('patrimonio_state'); } catch(e) {}
 }
 
-function loadLocal() {
-   s = localStorage.getItem('patrimonio_state');
-  if (s) {
-    try { state = { ...state, ...JSON.parse(s) }; } catch(e) {}
-  }
+function mostrarAvisoNuvem(texto) {
+  const el = document.getElementById('aviso-nuvem');
+  const t = document.getElementById('aviso-nuvem-texto');
+  if (!el || !t) { alert(texto); return; }
+  t.textContent = texto;
+  el.classList.remove('hidden');
+}
+
+function fecharAvisoNuvem() {
+  const el = document.getElementById('aviso-nuvem');
+  if (el) el.classList.add('hidden');
 }
 
 async function saveGist() {
-  if (!state.gistToken || !state.gistId) return;
+  if (!state.gistToken || !state.gistId) {
+    gistSituacao = 'erro-save';
+    updateGistStatus();
+    mostrarAvisoNuvem('Alteração NÃO salva: sem conexão com a nuvem. Faça login novamente.');
+    return false;
+  }
+  if (!gistCarregado) {
+    gistSituacao = 'erro-load';
+    updateGistStatus();
+    mostrarAvisoNuvem('Alteração NÃO salva: os dados da nuvem não foram carregados. Use "Carregar do Gist" em Configurações ou recarregue a página.');
+    return false;
+  }
   const data = {
     imoveis: state.imoveis,
     lancamentos: state.lancamentos,
@@ -318,16 +354,30 @@ async function saveGist() {
     historicoPL: state.historicoPL,
     metas: state.metas
   };
+  const body = JSON.stringify({ files: { 'patrimonio.json': { content: JSON.stringify(data, null, 2) } } });
+  gistSituacao = 'salvando';
+  updateGistStatus();
   try {
-    await fetch(`https://api.github.com/gists/${state.gistId}`, {
+    const r = await fetch('https://api.github.com/gists/' + state.gistId, {
       method: 'PATCH',
-      headers: { Authorization: `token ${state.gistToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: { 'patrimonio.json': { content: JSON.stringify(data, null, 2) } } })
+      headers: { Authorization: 'token ' + state.gistToken, 'Content-Type': 'application/json' },
+      body: body
     });
-  } catch(e) { console.error('Gist save error', e); }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    gistSituacao = 'ok';
+    updateGistStatus();
+    return true;
+  } catch(e) {
+    console.error('Gist save error', e);
+    gistSituacao = 'erro-save';
+    updateGistStatus();
+    mostrarAvisoNuvem('Alteração NÃO salva na nuvem (' + e.message + '). Tente novamente; ao recarregar a página essa alteração será perdida.');
+    return false;
+  }
 }
 
 async function loadGist() {
+  gistCarregado = false;
   if (!state.gistToken || !state.gistId) {
     console.warn('loadGist: token ou gistId ausente', { token: !!state.gistToken, gistId: state.gistId });
     return false;
@@ -338,6 +388,8 @@ async function loadGist() {
     });
     if (!r.ok) {
       console.error('loadGist: erro HTTP', r.status, r.statusText);
+      gistSituacao = 'erro-load';
+      updateGistStatus();
       return false;
     }
     const gist = await r.json();
@@ -351,12 +403,16 @@ async function loadGist() {
       if(data.meta)state.meta=data.meta;
       if(data.historicoPL)state.historicoPL=data.historicoPL;
       if(data.metas)state.metas=data.metas;
-      saveLocal();
     }
+    gistCarregado = true;
+    gistSituacao = 'ok';
+    fecharAvisoNuvem();
     updateGistStatus();
     return true;
   } catch(e) {
     console.error('loadGist: exceção', e);
+    gistSituacao = 'erro-load';
+    updateGistStatus();
     return false;
   }
 }
@@ -379,19 +435,30 @@ async function createGist(token) {
 function updateGistStatus() {
   const dot = document.getElementById('gist-dot');
   const txt = document.getElementById('gist-status-text');
-  if (state.gistToken && state.gistId) {
-    dot.classList.remove('off');
-    txt.textContent = 'Gist conectado';
-  } else {
+  if (!dot || !txt) return;
+  dot.classList.remove('off', 'pendente', 'erro');
+  if (!state.gistToken || !state.gistId) {
     dot.classList.add('off');
-    txt.textContent = 'Gist desconectado';
+    txt.textContent = 'Nuvem desconectada';
+  } else if (gistSituacao === 'erro-load' || !gistCarregado) {
+    dot.classList.add('erro');
+    txt.textContent = 'Falha ao carregar da nuvem';
+  } else if (gistSituacao === 'erro-save') {
+    dot.classList.add('erro');
+    txt.textContent = 'Falha ao salvar na nuvem';
+  } else if (gistSituacao === 'salvando') {
+    dot.classList.add('pendente');
+    txt.textContent = 'Salvando na nuvem...';
+  } else {
+    txt.textContent = 'Salvo na nuvem';
   }
 }
 
-// ─── SAVE (local + gist) ─────────────────────────────────────────────────────
+// ─── SAVE (somente nuvem) ────────────────────────────────────────────────────
+// Os saves entram em fila para que o último estado seja sempre o último gravado.
 function save() {
-  saveLocal();
-  saveGist();
+  _filaSave = _filaSave.then(saveGist, saveGist);
+  return _filaSave;
 }
 
 // ─── FORMATTERS ──────────────────────────────────────────────────────────────
@@ -2013,14 +2080,18 @@ async function salvarConfig() {
   if (!state.gistToken) { msg.textContent = 'Token não encontrado. Faça login novamente.'; msg.style.color = 'var(--danger)'; return; }
   msg.textContent = 'Conectando...'; msg.style.color = 'var(--text2)';
   try {
-    let id = gistId;
-    if (!id) {
-      id = await createGist(state.gistToken);
-      msg.textContent = `Gist criado! ID: ${id}`;
+    if (gistId) {
+      // Gist existente: carrega antes de qualquer gravação
+      state.gistId = gistId;
+      const okLoad = await loadGist();
+      if (!okLoad) throw new Error('não foi possível carregar o Gist informado. Nada foi gravado.');
+    } else {
+      // Gist novo (vazio): pode receber o estado atual
+      state.gistId = await createGist(state.gistToken);
+      gistCarregado = true;
+      const okSave = await save();
+      if (!okSave) throw new Error('Gist criado (ID ' + state.gistId + '), mas os dados não foram salvos.');
     }
-    state.gistId = id;
-    saveLocal();
-    await saveGist();
     msg.textContent = '✓ Conectado e sincronizado!';
     msg.style.color = 'var(--success)';
     updateGistStatus();
@@ -2128,13 +2199,37 @@ async function fazerLogin() {
   sessionStorage.setItem('pat_session', senha);
   state.gistToken = token;
   state.gistId = GIST_ID;
-  erro.textContent = 'Carregando dados do servidor...';
+  erro.textContent = 'Carregando dados da nuvem...';
   const ok = await loadGist();
-  if (!ok) {
-    console.warn('loadGist falhou no login — usando dados locais');
-  }
   updateGistStatus();
-  showHolding();
+  if (ok) showHolding(); else showErroCarregamento();
+}
+
+// Tela exibida quando o loadGist falha: não mostra nem edita dados sem a nuvem.
+function showErroCarregamento() {
+  document.getElementById('page-title').textContent = 'Erro ao carregar';
+  document.getElementById('topbar-actions').innerHTML = '';
+  document.getElementById('content').innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:center;min-height:60vh">' +
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:40px;width:100%;max-width:440px;text-align:center">' +
+        '<h2 style="font-size:18px;font-weight:600;margin-bottom:8px">Não foi possível carregar os dados da nuvem</h2>' +
+        '<p style="font-size:13px;color:var(--text2);margin-bottom:24px">Nenhum dado é guardado neste navegador. Verifique a conexão e tente novamente. Alterações feitas agora não seriam salvas.</p>' +
+        '<div style="display:flex;flex-direction:column;gap:12px">' +
+          '<button class="btn btn-primary" style="justify-content:center;padding:10px" onclick="tentarCarregarNovamente()">Tentar novamente</button>' +
+          '<button class="btn btn-secondary" style="justify-content:center;padding:10px" onclick="sessionStorage.removeItem(\'pat_session\');location.reload()">Sair</button>' +
+          '<div id="erro-carregamento-msg" style="font-size:13px;color:var(--danger);min-height:20px"></div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  mostrarAvisoNuvem('Os dados da nuvem não foram carregados. Nenhuma alteração será salva até carregar com sucesso.');
+}
+
+async function tentarCarregarNovamente() {
+  const msg = document.getElementById('erro-carregamento-msg');
+  if (msg) msg.textContent = 'Carregando...';
+  const ok = await loadGist();
+  if (ok) showHolding();
+  else if (msg) msg.textContent = 'Falhou de novo. Tente em instantes.';
 }
 
 
@@ -2847,7 +2942,7 @@ function mEditarContrib(id) {
 }
 
 
-loadLocal();
+limparArmazenamentoLocal();
 
 document.getElementById('content').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:var(--text3)"><span style="font-size:13px">Carregando...</span></div>';
 fetchDataHoje().then(async () => {
@@ -2858,9 +2953,8 @@ fetchDataHoje().then(async () => {
   const logado = await tentarLoginAutomatico();
   if (logado) {
     const ok = await loadGist();
-    if (!ok) console.warn('Auto-login: loadGist falhou, usando dados locais');
     updateGistStatus();
-    showHolding();
+    if (ok) showHolding(); else showErroCarregamento();
   } else {
     showLoginScreen();
   }
